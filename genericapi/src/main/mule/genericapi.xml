@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:vm="http://www.mulesoft.org/schema/mule/vm" xmlns:xml-module="http://www.mulesoft.org/schema/mule/xml-module"
+	xmlns:db="http://www.mulesoft.org/schema/mule/db"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/xml-module http://www.mulesoft.org/schema/mule/xml-module/current/mule-xml-module.xsd
+http://www.mulesoft.org/schema/mule/vm http://www.mulesoft.org/schema/mule/vm/current/mule-vm.xsd">
+	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="ef9aa311-d16b-4929-9ed6-9ae97c2ef253" >
+		<http:listener-connection host="0.0.0.0" port="8081" />
+	</http:listener-config>
+	<db:config name="Database_Config" doc:name="Database Config" doc:id="76f285c1-098a-461e-975f-a11b3410a426" >
+		<db:oracle-connection host="localhost" user="system" password="Manager1" serviceName="xe" />
+	</db:config>
+	<xml-module:config name="XML_Config" doc:name="XML Config" doc:id="03004e60-a1f8-4f5c-8039-fceea8f18049" />
+	<vm:config name="VM_Config" doc:name="VM Config" doc:id="ac4f9a1b-a5b9-4275-b9e7-e328f5375682">
+		<vm:queues >
+			<vm:queue queueName="VM_1" />
+		</vm:queues>
+	</vm:config>
+	<flow name="genericapiFlow" doc:id="ec31b601-b2b2-4ea5-893a-3d57909e6a5e" >
+		<http:listener doc:name="Listener" doc:id="26d38777-2f9d-48be-8f6e-fc169c222a4e" config-ref="HTTP_Listener_config" path="/gen"/>
+		<ee:transform doc:name="Transform Message" doc:id="c947d2ff-2b46-463b-bbbb-9520ce905f82" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+ if(payload.TransactionType =="Invoice") payload.Shipments.Shipment map ((item, index) ->"ShipmentHeader":{
+     "OrderId": payload.OrderId,
+     "TransactionID":payload.TransactionID,
+     "InvoiceType": payload.InvoiceType,
+     "CurrencyCode":payload.CountryCode,
+     "ShipmentLines": item.Lines.Line map ((item1, index1) -> {
+       "ShipmentLineId": item1.ShipmentLineId,
+       "LineId": item1.LineId,
+       "ProductCode": item1.ProductCode,
+       "UnitPrice":item1.UnitPrice
+
+     })
+
+ } ) else if (payload.TransactionType =="CreditMemo") payload.Payments map ((item, index) -> 
+"InvoiceHeader":{
+   "OrderId": payload.OrderId,
+   "TransactionID": payload.TransactionID,
+   "TransactionType":payload.TransactionType,
+   "OrderDate": payload.OrderDate,
+   "TotalCharges": payload.TotalCharges,
+   "TotalAdjustmentAmount": payload.TotalAdjustmentAmount,
+   "InvoiceLines": payload.Lines.Line map ((item1, index1) -> {
+     "LineId": item1.LineId,
+     "ProductCode":item1.ProductCode,
+     "ProductName": item1.ProductName,
+     "PriceAdjustments": item1.PriceAdjustments.PriceAdjustment map ((item2, index2) ->{
+     "Type": item2.Type,
+     "Reason": item2.Reason,
+     "Amount": item2.Amount
+     } )
+
+   })
+
+   }
+) else "no action"
+
+]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<ee:transform doc:name="Transform Message" doc:id="36925b9a-1bce-43a6-be48-4c5cec6220cc" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/java
+---
+{
+}]]></ee:set-payload>
+			</ee:message>
+			<ee:variables >
+				<ee:set-variable variableName="invheader" ><![CDATA[payload.InvoiceHeader]]></ee:set-variable>
+				<ee:set-variable variableName="invLines" ><![CDATA[payload.InvoiceHeader.InvoiceLines]]></ee:set-variable>
+				<ee:set-variable variableName="shiplines" ><![CDATA[%dw 2.0
+output application/json
+---
+payload.ShipmentHeader map ((item, index) -> {
+    "OrderId": item.OrderId,
+    "TransactionID":item.TransactionID,
+    "InvoiceType": item.InvoiceType
+
+})]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<logger level="INFO" doc:name="Logger Header" doc:id="c4506fa4-c653-4a44-a2e0-e126252e7f6e" message="#[vars.invheader]"/>
+		<db:bulk-insert doc:name="Bulk insert" doc:id="654ee6f2-1067-4b9f-aa95-f70bec6e7012" config-ref="Database_Config">
+			<db:bulk-input-parameters ><![CDATA[#[vars.shiplines]]]></db:bulk-input-parameters>
+			<db:sql ><![CDATA[INSERT INTO country (country_id, country_name, region_id)
+VALUES (:OrderId, :TransactionID, :InvoiceType)]]></db:sql>
+		</db:bulk-insert>
+		<logger level="INFO" doc:name="LineLogger" doc:id="63ca1ddb-c9ec-4ce9-99b8-0a7f2278c485" message="#[vars.invLines]"/>
+		<vm:publish doc:name="Publish" doc:id="11aa5a5b-6bac-453a-8651-8ea8f6145ea4" config-ref="VM_Config" queueName="VM_1"/>
+		<logger level="INFO" doc:name="Logger" doc:id="0c393d1a-ca76-4450-980f-59cf3a674883" message="Message publisded to VM Queue"/>
+	</flow>
+</mule>
